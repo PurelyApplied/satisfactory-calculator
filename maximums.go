@@ -8,33 +8,38 @@ import (
 	"strings"
 )
 
+const (
+	powerKey = "power"
+	shardKey = "overclock-shard"
+)
+
 type belt struct {
-	Name string `json:"name"`
+	Name string
 	Key  string `json:"key_name"`
-	Rate int    `json:"rate"`
+	Rate float64
 }
 
 type building struct {
-	Name     string `json:"name"`
+	Name     string
 	Key      string `json:"key_name"`
-	Category string `json:"category"`
-	Power    int    `json:"power"`
-	Max      int    `json:"max"`
+	Category string
+	Power    int
+	Inputs   int `json:"max"`
 }
 
 type miner struct {
-	Name     string `json:"name"`
+	Name     string
 	Key      string `json:"key_name"`
-	Category string `json:"category"`
-	Rate     int    `json:"base_rate"`
-	Power    int    `json:"power"`
+	Category string
+	Rate     float64 `json:"base_rate"`
+	Power    int
 }
 
 type item struct {
-	Name  string `json:"name"`
+	Name  string
 	Key   string `json:"key_name"`
-	Tier  int    `json:"tier"`
-	Stack int    `json:"stack_size"`
+	Tier  int
+	Stack int `json:"stack_size"`
 }
 
 func (i item) String() string {
@@ -43,25 +48,113 @@ func (i item) String() string {
 
 // products and ingredients coded as: key, count
 type recipe struct {
-	Name        string           `json:"name"`
-	Key         string           `json:"key_name"`
-	Category    string           `json:"category"`
-	Time        int              `json:"time"`
-	Ingredients [][2]interface{} `json:"ingredients"`
-	Product     [2]interface{}   `json:"product"`
+	Name        string
+	Key         string `json:"key_name"`
+	Category    string
+	Time        float64
+	Ingredients [][2]interface{}
+	Product     [2]interface{}
+}
+
+type resource struct {
+	Key      string `json:"key_name"`
+	Category string
 }
 
 type data struct {
-	Belts     []belt     `json:"belts"`
-	Buildings []building `json:"buildings"`
-	Miners    []miner    `json:"miners"`
-	Items     []item     `json:"items"`
-	Recipes   []recipe   `json:"recipes"`
+	Belts     []belt
+	Buildings []building
+	Miners    []miner
+	Items     []item
+	Recipes   []recipe
+	Resources []resource
 }
 
-const includeAlts = false
-
 func main() {
+	do(false)
+}
+
+func unpack(i [2]interface{}) (string, float64) {
+	return i[0].(string), i[1].(float64)
+}
+
+func do(includeAlts bool) {
+	dat := loadData()
+	index := buildIndex(dat)
+
+	// Build matrix from recipes
+	var matrix [][]float64
+	width := len(index)
+
+	for _, r := range dat.Recipes {
+		if includeAlts && strings.HasPrefix(r.Name, "Alternate") {
+			continue
+		}
+
+		row := make([]float64, width)
+		// Normalize to per minute
+		norm := 60.0 / r.Time
+		for _, ing := range r.Ingredients {
+			key, count := unpack(ing)
+
+			row[index[key]] = -norm * count
+		}
+
+		prodKey, prodCount := unpack(r.Product)
+
+		row[index[prodKey]] = norm * prodCount
+
+		row[index[powerKey]] = -getPowerCost(r, dat)
+
+		matrix = append(matrix, row)
+	}
+
+	for _, x := range matrix {
+		for _, v := range x {
+			fmt.Printf("%7.2f ", v)
+		}
+		fmt.Println()
+	}
+
+}
+
+func getPowerCost(r recipe, dat data) float64 {
+	cat := r.Category
+	for _, b := range dat.Buildings {
+		if cat == b.Category {
+			return float64(b.Power)
+		}
+	}
+	panic("Failed to find building for power cost.")
+}
+
+func buildIndex(dat data) map[string]int {
+	// Matrix will include resources, items, and custom columns for overclocking resources and power
+	i := 0
+	index := make(map[string]int)
+
+	for _, reso := range dat.Resources {
+		if _, ok := index[reso.Key]; !ok {
+			index[reso.Key] = i
+			i++
+		}
+	}
+
+	for _, item := range dat.Items {
+		if _, ok := index[item.Key]; !ok {
+			index[item.Key] = i
+			i++
+		}
+	}
+
+	index[powerKey] = i
+	i++
+	index[shardKey] = i
+
+	return index
+}
+
+func loadData() data {
 	bytes, err := ioutil.ReadFile("data/data.json")
 	if err != nil {
 		log.Fatal(err)
@@ -73,45 +166,5 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Reverse-map indices for items.
-	index := make(map[string]int)
-	for i, item := range dat.Items {
-		index[item.Key] = i
-	}
-
-	// Build matrix from recipes
-	var recipeConversions [][]float64
-	var recipesUsed []recipe
-
-	width := len(dat.Items)
-	for _, r := range dat.Recipes {
-		if strings.HasPrefix(r.Name, "Alternate") {
-			continue
-		}
-		row := make([]float64, width)
-		norm := 60.0 / float64(r.Time)
-		for _, ing := range r.Ingredients {
-			key := ing[0].(string)
-			count := ing[1].(float64)
-
-			row[index[key]] = -norm * count
-		}
-
-		prodKey := r.Product[0].(string)
-		prodCount := r.Product[1].(float64)
-
-		row[index[prodKey]] = norm * prodCount
-
-		recipeConversions = append(recipeConversions, row)
-		recipesUsed = append(recipesUsed, r)
-	}
-
-	for _, x := range recipeConversions {
-		for _, v := range x {
-			fmt.Printf("%7.2f ", v)
-		}
-		fmt.Println()
-	}
-
+	return dat
 }
